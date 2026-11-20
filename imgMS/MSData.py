@@ -55,6 +55,7 @@ class MSData():
         self.means = None
         self.quantified = None
         self.lod = None
+        self.lod_spots = None
         self.corrected_IS = None
         self.corrected_TS = None
 
@@ -285,6 +286,7 @@ class MSData():
             Quantified data in DF where index are peak names and columns are isotopes
         """
 
+        self.srm_name = srm_name
         self.quantified = pd.DataFrame()
         for el, isotope in self.isotopes.items():
 
@@ -441,12 +443,33 @@ class MSData():
         if self.logger is not None:
             self.logger.info(
                 f'Calculating detection limit by method: {method}, scale: {scale}')
-        self.lod = pd.Series()
+        self.lod = pd.Series(dtype=object)
+        spots = {}
+        keep = [i for i, n in enumerate(self.names or []) if n != getattr(self, 'srm_name', None)]
         for el, isotope in self.isotopes.items():
             isotope.detection_limit(method, scale, ablation_time)
-            self.lod[el] = isotope.lod
+            lod = np.asarray(isotope.lod, dtype=float)
+            if lod.ndim and lod.size > 1:
+                # drift correction gives one calibration factor, and so one LoD, per peak:
+                # keep the values of the non-calibrant peaks (rows of the quantified data)
+                per_spot = lod[keep] if len(lod) == len(self.names) else lod
+                spots[el] = per_spot
+                self.lod[el] = float(np.mean(per_spot))
+            else:
+                self.lod[el] = isotope.lod
         self.lod.name = 'lod'
+        # per-peak LoD (only with drift correction); self.lod then holds their mean
+        self.lod_spots = pd.DataFrame(spots) if spots else None
         return self.lod
+
+    def _report_column(self, values, elem):
+        """report() for one column, comparing each peak with its own LoD when there is one per peak."""
+        per_spot = getattr(self, 'lod_spots', None)
+        if per_spot is None or elem not in per_spot.columns:
+            return [report(value, self.lod, elem) for value in values]
+        lods = per_spot[elem].values
+        return [report(value, {elem: lods[i] if i < len(lods) else self.lod[elem]}, elem)
+                for i, value in enumerate(values)]
 
     def report(self):
         """
@@ -459,22 +482,19 @@ class MSData():
             self.corrected_TS = append_row(self.corrected_TS, ts_lod)
             for column in self.corrected_TS:
                 elem = element_formater(column, list(self.lod.index))
-                self.corrected_TS[column] = [
-                    report(value, self.lod, elem) for value in self.corrected_TS[column]]
+                self.corrected_TS[column] = self._report_column(self.corrected_TS[column], elem)
 
         if self.corrected_IS is not None:
             self.corrected_IS = {key: append_row(df, self.lod)
                                  for key, df in self.corrected_IS.items()}
             for el, df in self.corrected_IS.items():
                 for column in df:
-                    df[column] = [report(value, self.lod, column)
-                                  for value in df[column]]
+                    df[column] = self._report_column(df[column], column)
 
         if self.quantified is not None:
             self.quantified = append_row(self.quantified, self.lod)
             for column in self.quantified:
-                self.quantified[column] = [
-                    report(value, self.lod, column) for value in self.quantified[column]]
+                self.quantified[column] = self._report_column(self.quantified[column], column)
 
     def export(self, path):
         """
