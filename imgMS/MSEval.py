@@ -63,7 +63,9 @@ class DataReader():
             drop = 9
             index_col = 0
         elif instrument == 'Agilent':
-            skipfooter = 4
+            # footer length varies (usually 2 empty rows + "Printed:"); a fixed skipfooter of 4
+            # dropped the last data row. Footer rows are removed below by their non-numeric time.
+            skipfooter = 0
             header = 3
             drop = 3
             index_col = 0
@@ -95,6 +97,13 @@ class DataReader():
         elif filetype == 'txt':
             data = pd.read_csv(filename, sep=',', index_col=index_col, skipfooter=skipfooter,
                                header=header, engine='python')
+
+        if instrument == 'Agilent' and filetype in ('csv', 'txt'):
+            t = pd.to_numeric(pd.Series(data.index), errors='coerce')
+            data = data[t.notna().values]
+            data.index = t.dropna().values
+            data.index.name = 'Time [Sec]'
+            data = data.dropna(axis=1, how='all').apply(pd.to_numeric, errors='coerce')
 
         elif filetype == 'asc':
             try:
