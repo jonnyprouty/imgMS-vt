@@ -456,14 +456,14 @@ class MSData():
         if self.corrected_TS is not None:
             ts_lod = pd.Series({el: self.lod[el] if el in self.lod.index else self.lod[el.replace(
                 ' oxide', '')] for el in self.corrected_TS.columns}, name='LoD')
-            self.corrected_TS = self.corrected_TS.append(ts_lod)
+            self.corrected_TS = append_row(self.corrected_TS, ts_lod)
             for column in self.corrected_TS:
                 elem = element_formater(column, list(self.lod.index))
                 self.corrected_TS[column] = [
                     report(value, self.lod, elem) for value in self.corrected_TS[column]]
 
         if self.corrected_IS is not None:
-            self.corrected_IS = {key: df.append(self.lod)
+            self.corrected_IS = {key: append_row(df, self.lod)
                                  for key, df in self.corrected_IS.items()}
             for el, df in self.corrected_IS.items():
                 for column in df:
@@ -471,7 +471,7 @@ class MSData():
                                   for value in df[column]]
 
         if self.quantified is not None:
-            self.quantified = self.quantified.append(self.lod)
+            self.quantified = append_row(self.quantified, self.lod)
             for column in self.quantified:
                 self.quantified[column] = [
                     report(value, self.lod, column) for value in self.quantified[column]]

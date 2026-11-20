@@ -140,6 +140,11 @@ def plot_data(data, isotopes=None, ax=None, *args, **kwargs):
         ax.plot(data, *args, **kwargs)
 
 
+def append_row(frame, row, ignore_index=False):
+    """Add a Series as the last row of a DataFrame (DataFrame.append, removed in pandas 2)."""
+    return pd.concat([frame, row.to_frame().T], ignore_index=ignore_index)
+
+
 def match_internal_std(names, internal_std):
     """
     Line up internal standard values with the quantified peaks.
@@ -372,7 +377,7 @@ def formatted_export(frame, path):
     sumary = pd.DataFrame(columns=pd.concat(
         [pd.Series(['sample', 'stat']), pd.Series(frame.columns)]))
     if 'LoD' in frame.index:
-        sumary = sumary.append(pd.concat(
+        sumary = append_row(sumary, pd.concat(
             [pd.Series({'sample': 'LoD', 'stat': '-'}), frame.loc['LoD']]), ignore_index=True)
 
     # calculating stats
@@ -432,4 +437,4 @@ def formatted_export(frame, path):
         if label == 4:
             tmp = not tmp
 
-    writer.save()
+    writer.close()
