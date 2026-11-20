@@ -8,6 +8,7 @@ from decimal import Decimal
 import datetime
 import logging
 import itertools
+import os
 
 from imgMS.side_functions import *
 from imgMS.MSEval import *
@@ -374,19 +375,15 @@ class MSData():
         corrected data : DataFrame
             DataFrame where index are peak names and columns are isotopes with values in ppm.
         """
-        if self.param is not None:
-            if not self.param.ts_coef:
-                if self.logger is not None:
-                    self.logger.error(
-                        'Missing coeficients for total sum correction.')
-            else:
-                ts_coef = self.param.ts_coef
-        else:
+        ts_coef = self.param.ts_coef if self.param is not None and self.param.ts_coef else None
+        if not ts_coef:
+            # built-in factors: ./default_sum_koef.xlsx (the app folder), else the copy shipped with imgMS
+            path = './default_sum_koef.xlsx'
+            if not os.path.exists(path):
+                path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'default_sum_koef.xlsx')
             if self.logger is not None:
-                self.logger.error(
-                    'Using default TS coef.')
-            ts_coef = pd.ExcelFile(
-                './default_sum_koef.xlsx').parse(0, index_col=0, header=None).to_dict()[1]
+                self.logger.info(f'No total sum coefficients in the Param file: using {path}.')
+            ts_coef = pd.ExcelFile(path).parse(0, index_col=0, header=None).to_dict()[1]
 
         if self.logger is not None:
             self.logger.info(
