@@ -7,6 +7,7 @@ import warnings
 from decimal import Decimal
 import datetime
 import logging
+import os
 
 
 def get_logger(pathname):
@@ -138,6 +139,17 @@ def plot_data(data, isotopes=None, ax=None, *args, **kwargs):
         ax.plot(data[isotopes], *args, **kwargs)
     else:
         ax.plot(data, *args, **kwargs)
+
+
+def excel_path(path):
+    """Excel output path: add '.xlsx' when there is no extension, or replace a non-Excel one
+    (.csv, .txt) and .xls (xlsxwriter writes .xlsx only)."""
+    root, ext = os.path.splitext(str(path))
+    if ext.lower() == '.xlsx':
+        return str(path)
+    if ext.lower() in ('.xls', '.csv', '.txt', '.tsv'):
+        return root + '.xlsx'
+    return str(path) + '.xlsx'
 
 
 def append_row(frame, row, ignore_index=False):

@@ -500,8 +500,9 @@ class MSData():
         Parameters
         ----------
         path : str
-            Path to excel file where to save data.
+            Path to excel file where to save data ('.xlsx' is added or replaces another extension).
         """
+        path = excel_path(path)
 
         if self.logger is not None:
             self.logger.info(
@@ -540,6 +541,7 @@ class MSData():
             Path to excel file where to save data.
         """
 
+        path = excel_path(path)
         if self.logger is not None:
             self.logger.info(
                 f'Saving data to: {path}.')
@@ -552,8 +554,7 @@ class MSData():
             formatted_export(frame, path)
         elif 'IScorrected' in table:
             for elem in self.corrected_IS.keys():
-                formatted_export(self.corrected_IS[elem], "{0}_{2}.{1}".format(
-                    *path.rsplit('.', 1) + [elem]))
+                formatted_export(self.corrected_IS[elem], f'{path[:-5]}_{elem}.xlsx')
         else:
             raise ValueError(
                 f'{table} not in possible otions for table. Use quantified, TScorrected or IScorrected')
