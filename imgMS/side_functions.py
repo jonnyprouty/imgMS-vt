@@ -140,6 +140,64 @@ def plot_data(data, isotopes=None, ax=None, *args, **kwargs):
         ax.plot(data, *args, **kwargs)
 
 
+def match_internal_std(names, internal_std):
+    """
+    Line up internal standard values with the quantified peaks.
+
+    Rows are used in their given order when the sheet's names are exactly the
+    peak names in run order (one row per peak). Otherwise rows are matched by
+    peak name, which needs one value per name: one row per sample, in any order,
+    with extra names (e.g. the calibrant) ignored. Anything else raises
+    ValueError explaining what does not match, instead of applying values to the
+    wrong peaks.
+
+    Parameters
+    ----------
+    names: list
+        Peak names of the quantified data, in run order (calibrant peaks excluded).
+    internal_std: DataFrame
+        Internal standard values; index = peak names, columns = internal standard
+        isotopes (e.g. Si28).
+
+    Returns
+    -------
+    DataFrame with one row per peak, in the order of names.
+    """
+    names = [str(n).strip() for n in names]
+    sheet = internal_std.copy()
+    sheet.index = [str(i).strip() for i in sheet.index]
+    if list(sheet.index) == names:
+        out = sheet
+    else:
+        conflicts = []
+        for name, rows in sheet.groupby(level=0, sort=False):
+            for col in sheet.columns:
+                vals = rows[col].dropna().unique()
+                if len(vals) > 1:
+                    conflicts.append(f'{name} ({col}: {", ".join(str(v) for v in vals)})')
+        missing = [n for n in dict.fromkeys(names) if n not in sheet.index]
+        if conflicts or missing:
+            msg = ['Internal standard sheet does not match the peaks.']
+            if len(sheet) == len(names):
+                msg.append('It has one row per peak, but the row names are not the peak names in run order.')
+            else:
+                msg.append(f'It has {len(sheet)} rows for {len(names)} peaks (calibrant peaks excluded).')
+            if missing:
+                msg.append('No row for: ' + ', '.join(missing) + '.')
+            if conflicts:
+                msg.append('Rows of the same name have different values, so they can only be matched by '
+                           'position (one row per peak, in run order): ' + '; '.join(conflicts) + '.')
+            raise ValueError(' '.join(msg))
+        first = sheet[~sheet.index.duplicated()]
+        out = first.loc[names]
+    out = out.copy()
+    out.index = names
+    blank = [f'{n} ({c})' for c in out.columns for n, v in out[c].items() if pd.isna(v)]
+    if blank:
+        raise ValueError('Internal standard value missing for: ' + ', '.join(dict.fromkeys(blank)) + '.')
+    return out
+
+
 def correction(data, elem, internal_std):
     """
     Calculates internal standard correction.
@@ -151,11 +209,11 @@ def correction(data, elem, internal_std):
     el: str
         Element used as internal standard
     internal_std: DataFrame
-        DataFrame of values of internal standard  where columns are elements for 
-        correction and each row represents one measurement e.g. Spot.
+        DataFrame of values of internal standard  where columns are elements for
+        correction and index are peak names (see match_internal_std).
     """
-    ratio = data[element_formater(elem, data.columns)].div(
-        list(internal_std[elem]))
+    aligned = match_internal_std(list(data.index), internal_std)
+    ratio = data[element_formater(elem, data.columns)].div(aligned[elem].values)
     return data.apply(lambda x: x/ratio)
 
 

@@ -315,24 +315,34 @@ class MSData():
             dict of internal standards used for correction as keys and DataFrames
             where index are peak names and columns are isotopes with values in ppm.
         """
-        self.corrected_IS = {}
+        self.corrected_IS = None
 
-        if self.param is not None:
-            if self.param.is_coef.empty:
-                if self.logger is not None:
-                    self.logger.error(
-                        'Missing coefficients of internal standards.')
+        if self.param is None:
+            msg = 'Missing param file for IS correction.'
+        elif self.param.is_coef is None or self.param.is_coef.empty:
+            msg = 'Missing coefficients of internal standards.'
+        elif self.quantified is None:
+            msg = 'Quantify the data before internal standard correction.'
         else:
+            msg = None
+        if msg:
             if self.logger is not None:
-                self.logger.error(
-                    'Missing param file for IS correction.')
+                self.logger.error(msg)
+            raise ValueError(msg)
 
         self.correction_elements = list(self.param.is_coef.columns)
+        self.corrected_IS = {}
 
-        for el in self.correction_elements:
-            if el in list(map(elem_resolution, self.isotope_names)):
-                self.corrected_IS[el] = (correction(
-                    self.quantified, el, self.param.is_coef))
+        try:
+            for el in self.correction_elements:
+                if el in list(map(elem_resolution, self.isotope_names)):
+                    self.corrected_IS[el] = (correction(
+                        self.quantified, el, self.param.is_coef))
+        except ValueError as e:
+            self.corrected_IS = None
+            if self.logger is not None:
+                self.logger.error(str(e))
+            raise
         return self.corrected_IS
 
     def TS_correction(self, suma=1000000, skip_isotopes=[], return_oxides=False):
