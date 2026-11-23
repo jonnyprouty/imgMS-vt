@@ -709,7 +709,7 @@ class Isotope():
             Multiplier of std above which values will be replaced.
         """
 
-        sig = pd.Series(self.data)
+        sig = pd.Series(np.copy(self.data))  # a copy: the raw data must not change
         skip = int((win-1)/2)
         outliers = np.zeros(len(sig), dtype=bool)
         outliers[skip:-skip] = True
