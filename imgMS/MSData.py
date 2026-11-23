@@ -8,6 +8,7 @@ from decimal import Decimal
 import datetime
 import logging
 import itertools
+import json
 import os
 
 from imgMS.side_functions import *
@@ -59,7 +60,8 @@ class MSData():
         self.lod_spots = None
         self.corrected_IS = None
         self.corrected_TS = None
-        self.selection_version = 0  # changes whenever the peak windows change
+        self.peak_edits = {}  # peak index -> {'start', 'end', 'exclude': [(a, b), ...]} (readings, end-exclusive)
+        self.selection_version = 0  # changes whenever signal or background windows change
 
         self.create_isotopes()
 
@@ -177,7 +179,185 @@ class MSData():
         self.starts, self.ends = self.selector()
         self.laser_on, self.laser_off = self.selector.create_on_off(
             self.starts, self.ends)
+        self.peak_edits = {}
+        self._selection_changed()
+
+    # ------------------------------------------------------------------ manual peak edits
+
+    def peak_window(self, peak):
+        """(start, end) readings of a peak's signal window, end-exclusive, including any manual edit."""
+        edit = self.peak_edits.get(peak)
+        return (edit['start'], edit['end']) if edit else tuple(self.laser_on[peak])
+
+    def signal_segments(self, peak):
+        """Contiguous (start, end) reading ranges used as signal for a peak."""
+        start, end = self.peak_window(peak)
+        segments, cursor = [], start
+        for a, b in (self.peak_edits[peak]['exclude'] if peak in self.peak_edits else []):
+            if a > cursor:
+                segments.append((cursor, a))
+            cursor = max(cursor, b)
+        if cursor < end:
+            segments.append((cursor, end))
+        return segments
+
+    def background_windows(self):
+        """
+        (laser_on, laser_off) windows for background calculation. Readings removed from a peak by a
+        manual edit stay out of the background: each peak masks the union of its automatic and
+        edited windows. Without edits these are the automatic windows.
+        """
+        if not self.peak_edits:
+            return self.laser_on, self.laser_off
+        on, off = list(self.laser_on), list(self.laser_off)
+        for peak, edit in self.peak_edits.items():
+            a, b = self.laser_on[peak]
+            on[peak] = (min(a, edit['start']), max(b, edit['end']))
+            off[peak] = (off[peak][0], min(off[peak][1], on[peak][0]))
+            off[peak + 1] = (max(off[peak + 1][0], on[peak][1]), off[peak + 1][1])
+        return on, off
+
+    def set_peak_edit(self, peak, start=None, end=None, exclude=None):
+        """
+        Edit one peak's signal window. Calculated results are cleared when anything changes.
+
+        Parameters
+        ----------
+        peak : int
+            Peak index (0-based, in run order).
+        start, end : int (optional)
+            First reading and end-exclusive last reading of the signal. None keeps the current value.
+        exclude : list of (a, b) (optional)
+            Reading ranges (end-exclusive) inside the window not to use. None keeps the current ones.
+
+        Returns
+        -------
+        changed : bool
+        """
+        if not self.laser_on or not 0 <= peak < len(self.laser_on):
+            raise ValueError(f'No peak number {peak + 1}.')
+        min_gap = 5  # readings of blank kept between neighbouring windows
+        auto = tuple(self.laser_on[peak])
+        old = self.peak_edits.get(peak, {'start': auto[0], 'end': auto[1], 'exclude': []})
+        start = old['start'] if start is None else int(start)
+        end = old['end'] if end is None else int(end)
+        exclude = old['exclude'] if exclude is None else exclude
+
+        bg_on = self.background_windows()[0]
+        low = bg_on[peak - 1][1] + min_gap if peak > 0 else 0
+        high = bg_on[peak + 1][0] - min_gap if peak + 1 < len(bg_on) else len(self.data) - 1
+        if start < min(auto[0], low) or end > max(auto[1], high):
+            raise ValueError(f'Peak {peak + 1}: the window would overlap the neighbouring peak or leave no blank.')
+
+        merged = []
+        for a, b in sorted((max(int(a), start), min(int(b), end)) for a, b in exclude):
+            if b <= a:
+                continue
+            if merged and a <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        if end - start - sum(b - a for a, b in merged) < 3:
+            raise ValueError(f'Peak {peak + 1}: at least 3 readings of signal must remain.')
+
+        new = {'start': start, 'end': end, 'exclude': merged}
+        if new == old:
+            return False
+        if (start, end) == auto and not merged:
+            self.peak_edits.pop(peak, None)
+        else:
+            self.peak_edits[peak] = new
+        self._selection_changed()
+        return True
+
+    def clear_peak_edits(self, peak=None):
+        """Remove the manual edit of one peak, or of all peaks. Returns True if anything changed."""
+        if peak is None:
+            changed = bool(self.peak_edits)
+            self.peak_edits = {}
+        else:
+            changed = self.peak_edits.pop(peak, None) is not None
+        if changed:
+            self._selection_changed()
+        return changed
+
+    def _selection_changed(self):
+        """Windows changed: earlier results no longer apply and must be recalculated."""
+        if getattr(self, '_holding_changes', False):  # loading a file: applied once it is valid
+            return
         self.selection_version += 1
+        self.means = self.quantified = self.corrected_IS = self.corrected_TS = None
+        self.lod = self.lod_spots = None
+        for isotope in self.isotopes.values():
+            isotope.means = isotope.quantified = isotope.ratio = None
+
+    def _peak_name(self, peak):
+        return str(self.names[peak]) if self.names and peak < len(self.names) else ''
+
+    def peak_edits_table(self):
+        """Record of the manual edits (times in s), one row per edited peak."""
+        t = np.asarray(self.time, dtype=float)
+        rows = []
+        for peak in sorted(self.peak_edits):
+            edit = self.peak_edits[peak]
+            a, b = self.laser_on[peak]
+            rows.append({'peak': peak + 1, 'name': self._peak_name(peak),
+                         'auto_start_s': t[a], 'auto_end_s': t[b - 1],
+                         'start_s': t[edit['start']], 'end_s': t[edit['end'] - 1],
+                         'excluded_s': '; '.join(f'{t[x]:.3f}-{t[y - 1]:.3f}' for x, y in edit['exclude']),
+                         'auto_readings': b - a,
+                         'readings_used': sum(y - x for x, y in self.signal_segments(peak))})
+        return pd.DataFrame(rows, columns=['peak', 'name', 'auto_start_s', 'auto_end_s', 'start_s', 'end_s',
+                                           'excluded_s', 'auto_readings', 'readings_used'])
+
+    def save_peak_edits(self, path):
+        """Save the manual edits to a JSON file (times in s of the first and last reading used)."""
+        t = np.asarray(self.time, dtype=float)
+        peaks = []
+        for peak in sorted(self.peak_edits):
+            edit = self.peak_edits[peak]
+            peaks.append({'peak': peak + 1, 'name': self._peak_name(peak),
+                          'start_s': float(t[edit['start']]), 'end_s': float(t[edit['end'] - 1]),
+                          'exclude_s': [[float(t[a]), float(t[b - 1])] for a, b in edit['exclude']]})
+        filename = getattr(self.datareader, 'filename', None)
+        with open(path, 'w') as fh:
+            json.dump({'format': 'imgMS peak edits', 'version': 1,
+                       'data_file': os.path.basename(str(filename)) if filename else None,
+                       'n_peaks': len(self.laser_on), 'peaks': peaks}, fh, indent=1)
+
+    def load_peak_edits(self, path):
+        """
+        Replace the manual edits with those in a file saved by save_peak_edits. The file must match
+        the current selection (number of peaks and names); nothing changes if any entry is invalid.
+        """
+        with open(path) as fh:
+            saved = json.load(fh)
+        if not isinstance(saved, dict) or saved.get('format') != 'imgMS peak edits':
+            raise ValueError(f'{os.path.basename(str(path))} is not a peak edits file.')
+        if saved['n_peaks'] != len(self.laser_on):
+            raise ValueError(f"The file is for {saved['n_peaks']} peaks; the current selection has "
+                             f'{len(self.laser_on)}.')
+        t = np.asarray(self.time, dtype=float)
+        index = lambda x: int(np.abs(t - x).argmin())
+        previous = self.peak_edits
+        self.peak_edits = {}
+        self._holding_changes = True
+        try:
+            for entry in saved['peaks']:
+                peak = entry['peak'] - 1
+                if entry.get('name') and self.names and entry['name'] != self._peak_name(peak):
+                    raise ValueError(f"Peak {peak + 1} is {self._peak_name(peak)} here but {entry['name']} "
+                                     'in the file.')
+                self.set_peak_edit(peak, index(entry['start_s']), index(entry['end_s']) + 1,
+                                   [(index(a), index(b) + 1) for a, b in entry['exclude_s']])
+        except (ValueError, KeyError, TypeError) as e:
+            self.peak_edits = previous
+            raise ValueError(f'Peak edits not loaded: {e}')
+        finally:
+            self._holding_changes = False
+        if self.peak_edits != previous:
+            self._selection_changed()
+        return len(self.peak_edits)
 
     def graph(self, ax=None, logax=False, el=None, *args, **kwargs):
         """
@@ -223,7 +403,7 @@ class MSData():
 
         if self.laser_off:
             # higlights bacground
-            for off in self.laser_off:
+            for off in self.background_windows()[1]:
                 try:
                     ax.axvspan(
                         self.time[off[0]], self.time[off[1]], alpha=0.2, color='red')
@@ -232,9 +412,17 @@ class MSData():
 
         if self.laser_on:
             # higlihts ablation
-            for on in self.laser_on:
-                ax.axvspan(self.time[on[0]], self.time[on[1]],
-                           alpha=0.2, color='green')
+            for peak in range(len(self.laser_on)):
+                for a, b in self.signal_segments(peak):
+                    ax.axvspan(self.time[a], self.time[b], alpha=0.2, color='green')
+            # readings removed by manual edits (neither signal nor background)
+            bg_on = self.background_windows()[0]
+            for peak in self.peak_edits:
+                cursor = bg_on[peak][0]
+                for a, b in self.signal_segments(peak) + [(bg_on[peak][1], bg_on[peak][1])]:
+                    if a > cursor:
+                        ax.axvspan(self.time[cursor], self.time[a], alpha=0.35, color='grey')
+                    cursor = max(cursor, b)
 
         plt.show()
 
@@ -289,6 +477,8 @@ class MSData():
             Quantified data in DF where index are peak names and columns are isotopes
         """
 
+        if self.means is None:
+            raise ValueError('Run Average before Quantification.')
         self.srm_name = srm_name
         self.quantified = pd.DataFrame()
         for el, isotope in self.isotopes.items():
@@ -528,6 +718,9 @@ class MSData():
         if self.corrected_TS is not None:
             data['corrected_TS'] = self.corrected_TS
 
+        if getattr(self, 'peak_edits', None):
+            data['peak_edits'] = self.peak_edits_table().set_index('peak')
+
         for key, df in data.items():
             df.to_excel(writer, sheet_name=key)
 
@@ -548,15 +741,16 @@ class MSData():
             self.logger.info(
                 f'Saving data to: {path}.')
 
+        edits = self.peak_edits_table() if getattr(self, 'peak_edits', None) else None
         if table == 'quantified':
             frame = self.quantified
-            formatted_export(frame, path)
+            formatted_export(frame, path, edits)
         elif table == 'TScorrected':
             frame = self.corrected_TS
-            formatted_export(frame, path)
+            formatted_export(frame, path, edits)
         elif 'IScorrected' in table:
             for elem in self.corrected_IS.keys():
-                formatted_export(self.corrected_IS[elem], f'{path[:-5]}_{elem}.xlsx')
+                formatted_export(self.corrected_IS[elem], f'{path[:-5]}_{elem}.xlsx', edits)
         else:
             raise ValueError(
                 f'{table} not in possible otions for table. Use quantified, TScorrected or IScorrected')
@@ -740,8 +934,7 @@ class Isotope():
                     'Bacground correction requires selection of peaks first.')
             return
 
-        self.bcg = Background(
-            self, self.ms_data.laser_on, self.ms_data.laser_off)
+        self.bcg = Background(self, *self.ms_data.background_windows())
 
         if not despiked:
             data = np.copy(self.data)
@@ -796,12 +989,13 @@ class Isotope():
                 data = np.copy(self.despiked)
 
         means = []
-        for on in laser_on:
+        for peak in range(len(laser_on)):
+            segments = self.ms_data.signal_segments(peak)
+            sample_y = np.concatenate([data[a:b] for a, b in segments])
             if method == 'intensity':
-                means.append(np.mean(data[on[0]:on[1]]))
+                means.append(np.mean(sample_y))
             elif method == 'integral':
-                sample_y = data[on[0]:on[1]]
-                sample_x = self.time[on[0]:on[1]]
+                sample_x = np.concatenate([np.asarray(self.time[a:b]) for a, b in segments])
                 means.append(np.trapz(sample_y, sample_x))
             else:
                 if self.logger is not None:

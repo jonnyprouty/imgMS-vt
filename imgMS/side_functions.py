@@ -341,7 +341,7 @@ def multivariate_outliers(df, cols=cols_to_perc, threshold=3):
     return multi_out
 
 
-def formatted_export(frame, path):
+def formatted_export(frame, path, edits=None):
     writer = pd.ExcelWriter(path, engine='xlsxwriter')
 
     # Exporting analysis with outliers marked by red colour
@@ -448,5 +448,8 @@ def formatted_export(frame, path):
 
         if label == 4:
             tmp = not tmp
+
+    if edits is not None:  # record of manual peak edits
+        edits.to_excel(writer, sheet_name='peak_edits', index=False)
 
     writer.close()
