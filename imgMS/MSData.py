@@ -59,6 +59,7 @@ class MSData():
         self.lod_spots = None
         self.corrected_IS = None
         self.corrected_TS = None
+        self.selection_version = 0  # changes whenever the peak windows change
 
         self.create_isotopes()
 
@@ -176,6 +177,7 @@ class MSData():
         self.starts, self.ends = self.selector()
         self.laser_on, self.laser_off = self.selector.create_on_off(
             self.starts, self.ends)
+        self.selection_version += 1
 
     def graph(self, ax=None, logax=False, el=None, *args, **kwargs):
         """
@@ -661,6 +663,7 @@ class Isotope():
         self.bcg = None
         self.bcg_corrected = None
         self.bcgcor_method = None
+        self._bcg_key = None  # (method, despiked, selection version) of bcg_corrected
         self.means = None
         self.ratio = None
         self.quantified = None
@@ -762,6 +765,7 @@ class Isotope():
         data_out[data_out < 0] = 0
         self.bcg_corrected = data_out
         self.bcgcor_method = method
+        self._bcg_key = (method, bool(despiked), self.ms_data.selection_version)
 
     def average_intensity(self, despiked=True, bcgcor_method='all', method='intensity'):
         """
@@ -779,11 +783,10 @@ class Isotope():
         laser_on = self.ms_data.laser_on
 
         if bcgcor_method is not None:
-            if self.bcg_corrected is None or self.bcgcor_method != bcgcor_method:
+            key = (bcgcor_method, bool(despiked), self.ms_data.selection_version)
+            if self.bcg_corrected is None or self._bcg_key != key:
                 self.bcg_correction(method=bcgcor_method, despiked=despiked)
-                data = np.copy(self.bcg_corrected)
-            else:
-                data = np.copy(self.bcg_corrected)
+            data = np.copy(self.bcg_corrected)
         else:
             if not despiked:
                 data = np.copy(self.data)
