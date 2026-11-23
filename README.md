@@ -20,6 +20,8 @@ Changes from the original (0.2.12):
 - Report handles per-peak detection limits from drift correction.
 - Built-in total-sum factors cover all common isotopes (Ca43 was missing); a Param file without total-sum factors falls back to them.
 - Export and stats export accept file names without an extension (`.xlsx` is added).
+- Despiking no longer overwrites the raw data, and the background is recalculated when the selection or despiking option changes.
+- Manual peak edits: signal windows and excluded intervals per peak, kept out of the background, saved to a file and recorded in exports.
 - Tests: `python -m unittest discover tests`.
 
 The original README follows.
